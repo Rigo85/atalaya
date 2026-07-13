@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+state.json
+state.json.tmp
+*.log
+.idea
+.claude
