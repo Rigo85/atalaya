@@ -15,7 +15,7 @@ describe('GatewayClient', () => {
       new Response('{"status":"suppressed","reason":"dedup"}', { status: 200 }),
     ]) {
       const client = new GatewayClient(cfg, logger(), vi.fn(async () => response) as typeof fetch);
-      expect(await client.send(opts)).toBe(true);
+      expect((await client.send(opts)).outcome).toBe(response.status === 200 ? 'deduplicated' : 'accepted');
     }
   });
 
@@ -23,7 +23,7 @@ describe('GatewayClient', () => {
     const log = logger();
     const fetchFn = vi.fn(async () => new Response('{"status":"suppressed"}', { status: 202 }));
     const client = new GatewayClient(cfg, log, fetchFn as typeof fetch);
-    expect(await client.send(opts)).toBe(false);
+    expect((await client.send(opts)).outcome).toBe('rejected');
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(log.error).toHaveBeenCalledOnce();
   });
@@ -31,7 +31,7 @@ describe('GatewayClient', () => {
   it('429 se registra y no se reintenta', async () => {
     const fetchFn = vi.fn(async () => new Response('{"status":"suppressed"}', { status: 429 }));
     const client = new GatewayClient(cfg, logger(), fetchFn as typeof fetch);
-    expect(await client.send(opts)).toBe(false);
+    expect((await client.send(opts)).outcome).toBe('rejected');
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
@@ -46,7 +46,7 @@ describe('GatewayClient', () => {
       fetchFn as typeof fetch,
       async (ms) => { delays.push(ms); },
     );
-    expect(await client.send(opts)).toBe(true);
+    expect((await client.send(opts)).outcome).toBe('accepted');
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(delays).toEqual([60_000]);
   });
@@ -62,7 +62,24 @@ describe('GatewayClient', () => {
       fetchFn as typeof fetch,
       async (ms) => { delays.push(ms); },
     );
-    expect(await client.send(opts)).toBe(true);
+    expect((await client.send(opts)).outcome).toBe('accepted');
     expect(delays).toEqual([300_000]);
+  });
+
+  it('stop cancela una espera de reintento y no vuelve a llamar al gateway', async () => {
+    const fetchFn = vi.fn(async () => new Response('{}', { status: 503 }));
+    const client = new GatewayClient(
+      cfg,
+      logger(),
+      fetchFn as typeof fetch,
+      async (_ms, signal) => new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
+    );
+    const sending = client.send(opts);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledOnce());
+    client.stop();
+    await expect(sending).resolves.toMatchObject({ outcome: 'rejected', reason: 'shutdown' });
+    expect(fetchFn).toHaveBeenCalledOnce();
   });
 });

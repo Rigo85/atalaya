@@ -10,42 +10,50 @@ export interface SendOptions {
   dedupKey?: string;
 }
 
+export type GatewaySendOutcome = 'accepted' | 'deduplicated' | 'rejected';
+
+export interface GatewaySendResult {
+  outcome: GatewaySendOutcome;
+  status?: number;
+  reason?: string;
+}
+
 interface Logger {
   warn: (obj: object, msg: string) => void;
   error: (obj: object, msg: string) => void;
 }
 
 export type FetchLike = typeof fetch;
+type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 const RETRY_DELAYS_MS = [0, 2_000, 8_000];
 const MAX_RETRY_AFTER_MS = 5 * 60_000;
 
-/**
- * Cliente del notification-gateway. Reintento corto y descarte con log:
- * la cola persistente es responsabilidad del gateway, no de atalaya.
- */
 export class GatewayClient {
-  private cfg: GatewayConfig;
-  private log: Logger;
-  private fetchFn: FetchLike;
-  private sleepFn: (ms: number) => Promise<void>;
+  private controller = new AbortController();
 
   constructor(
-    cfg: GatewayConfig,
-    log: Logger,
-    fetchFn: FetchLike = fetch,
-    sleepFn: (ms: number) => Promise<void> = sleep,
-  ) {
-    this.cfg = cfg;
-    this.log = log;
-    this.fetchFn = fetchFn;
-    this.sleepFn = sleepFn;
+    private cfg: GatewayConfig,
+    private log: Logger,
+    private fetchFn: FetchLike = fetch,
+    private sleepFn: Sleep = sleep,
+  ) {}
+
+  stop(): void {
+    this.controller.abort();
   }
 
-  async send(opts: SendOptions): Promise<boolean> {
+  async send(opts: SendOptions): Promise<GatewaySendResult> {
     let nextDelayMs = 0;
     for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt++) {
-      if (nextDelayMs) await this.sleepFn(nextDelayMs);
+      if (nextDelayMs) {
+        try {
+          await this.sleepFn(nextDelayMs, this.controller.signal);
+        } catch {
+          return { outcome: 'rejected', reason: 'shutdown' };
+        }
+      }
+      if (this.controller.signal.aborted) return { outcome: 'rejected', reason: 'shutdown' };
       try {
         const res = await this.fetchFn(`${this.cfg.url}/api/notifications`, {
           method: 'POST',
@@ -59,31 +67,34 @@ export class GatewayClient {
             priority: opts.priority,
             ...(opts.dedupKey ? { dedup_key: opts.dedupKey } : {}),
           }),
-          signal: AbortSignal.timeout(10_000),
+          signal: AbortSignal.any([AbortSignal.timeout(10_000), this.controller.signal]),
         });
         if (res.ok) {
           const body = await responseJson(res);
-          if (body?.status === 'suppressed' && body.reason !== 'dedup') {
+          if (body?.status === 'suppressed') {
+            if (body.reason === 'dedup') return { outcome: 'deduplicated', status: res.status, reason: 'dedup' };
             this.log.error({ status: res.status, body }, 'gateway suprimió la notificación');
-            return false;
+            return { outcome: 'rejected', status: res.status, reason: 'suppressed' };
           }
-          return true;
+          return { outcome: 'accepted', status: res.status };
         }
-        // 4xx no mejora reintentando (key mala, payload inválido)
         if (res.status >= 400 && res.status < 500) {
           this.log.error({ status: res.status, body: await res.text() }, 'gateway rechazó la notificación');
-          return false;
+          return { outcome: 'rejected', status: res.status, reason: 'client_error' };
         }
         const retryAfterMs = res.status === 503 ? parseRetryAfterMs(res.headers.get('retry-after')) : null;
         nextDelayMs = retryAfterMs ?? RETRY_DELAYS_MS[attempt + 1] ?? 0;
-        this.log.warn({ status: res.status, retryAfterMs: nextDelayMs }, 'gateway respondió error, reintentando');
+        if (attempt + 1 < RETRY_DELAYS_MS.length) {
+          this.log.warn({ status: res.status, retryAfterMs: nextDelayMs }, 'gateway respondió error, reintentando');
+        }
       } catch (err) {
+        if (this.controller.signal.aborted) return { outcome: 'rejected', reason: 'shutdown' };
         nextDelayMs = RETRY_DELAYS_MS[attempt + 1] ?? 0;
-        this.log.warn({ err: String(err) }, 'gateway inalcanzable, reintentando');
+        if (attempt + 1 < RETRY_DELAYS_MS.length) this.log.warn({ err: String(err) }, 'gateway inalcanzable, reintentando');
       }
     }
-    this.log.error({ message: opts.message }, 'notificación descartada tras reintentos');
-    return false;
+    this.log.error({}, 'notificación descartada tras reintentos');
+    return { outcome: 'rejected', reason: 'retries_exhausted' };
   }
 }
 
@@ -98,14 +109,23 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
 function parseRetryAfterMs(value: string | null): number | null {
   if (!value) return null;
   const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
-  }
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
   const dateMs = Date.parse(value);
   if (Number.isNaN(dateMs)) return null;
   return Math.min(Math.max(0, dateMs - Date.now()), MAX_RETRY_AFTER_MS);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('aborted'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error('aborted'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }

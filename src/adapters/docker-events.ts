@@ -1,6 +1,7 @@
 import http from 'node:http';
 import type { Dispatcher } from '../dispatcher.js';
 import type { StateStore } from '../state.js';
+import type { HealthRegistry } from '../health.js';
 
 export interface DockerEventMsg {
   Type?: string;
@@ -25,7 +26,7 @@ const RECONNECT_MS = 10_000;
 /**
  * Reglas (plan F1 §4):
  *  - die exit!=0 → gracia; si no vuelve → critical; si vuelve → warning agrupada
- *  - die exit=0 (stop ordenado) → info (digest) y sale del inventario esperado
+ *  - die exit=0 (stop ordenado) → info (digest), sin olvidar el servicio
  *  - oom → critical directo
  *  - health_status unhealthy → warning agrupada
  *  - al arrancar: contenedores del inventario que no corren → warning
@@ -35,25 +36,54 @@ export class DockerWatcher {
   private state: StateStore;
   private cfg: DockerWatcherConfig;
   private log: Logger;
+  private health?: HealthRegistry;
   private pendingDown = new Map<string, NodeJS.Timeout>();
-  private running = true;
+  private running = false;
+  private streamRequest?: http.ClientRequest;
+  private streamResponse?: http.IncomingMessage;
+  private reconnectTimer?: NodeJS.Timeout;
 
-  constructor(dispatcher: Dispatcher, state: StateStore, cfg: DockerWatcherConfig, log: Logger) {
+  constructor(
+    dispatcher: Dispatcher,
+    state: StateStore,
+    cfg: DockerWatcherConfig,
+    log: Logger,
+    health?: HealthRegistry,
+  ) {
     this.dispatcher = dispatcher;
     this.state = state;
     this.cfg = cfg;
     this.log = log;
+    this.health = health;
   }
 
   async start(): Promise<void> {
-    await this.snapshot();
-    this.streamEvents();
+    if (this.running) return;
+    this.running = true;
+    await this.connect();
   }
 
   stop(): void {
     this.running = false;
+    this.health?.disconnected('docker', 'watcher detenido');
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.streamResponse?.destroy();
+    this.streamRequest?.destroy();
+    this.streamResponse = undefined;
+    this.streamRequest = undefined;
     for (const t of this.pendingDown.values()) clearTimeout(t);
     this.pendingDown.clear();
+  }
+
+  private async connect(): Promise<void> {
+    try {
+      await this.snapshot();
+      this.streamEvents();
+    } catch (err) {
+      this.reconnect(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
   }
 
   private ignored(name: string): boolean {
@@ -90,7 +120,6 @@ export class DockerWatcher {
       const exitCode = Number(attrs.exitCode ?? '0');
       if (exitCode === 0) {
         void this.dispatcher.emit({ level: 'info', tag: 'docker.stop' });
-        this.state.removeExpectedContainer(name);
         return;
       }
       if (this.pendingDown.has(name)) return; // ya hay una gracia en curso
@@ -151,6 +180,13 @@ export class DockerWatcher {
     const req = http.get(
       { socketPath: this.cfg.sockPath, path: `/events?filters=${filters}` },
       (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          this.reconnect(`stream Docker HTTP ${res.statusCode ?? 'sin status'}`);
+          return;
+        }
+        this.streamResponse = res;
+        this.health?.connected('docker');
         let buffer = '';
         res.setEncoding('utf8');
         res.on('data', (chunk: string) => {
@@ -162,26 +198,43 @@ export class DockerWatcher {
             if (!line) continue;
             try {
               this.handleEvent(JSON.parse(line) as DockerEventMsg);
+              this.health?.event('docker');
             } catch (err) {
               this.log.warn({ line, err: String(err) }, 'línea de evento docker no parseable');
             }
           }
         });
-        res.on('end', () => this.reconnect('stream cerrado'));
+        res.once('end', () => this.reconnect('stream cerrado'));
+        res.once('error', (err) => this.reconnect(String(err)));
       },
     );
-    req.on('error', (err) => this.reconnect(String(err)));
+    this.streamRequest = req;
+    req.once('error', (err) => this.reconnect(String(err)));
   }
 
   private reconnect(reason: string): void {
     if (!this.running) return;
+    this.health?.disconnected('docker', reason);
+    this.streamResponse?.destroy();
+    this.streamRequest?.destroy();
+    this.streamResponse = undefined;
+    this.streamRequest = undefined;
+    if (this.reconnectTimer) return;
     this.log.warn({ reason }, `stream de docker events caído; reintento en ${RECONNECT_MS / 1000}s`);
-    setTimeout(() => this.streamEvents(), RECONNECT_MS);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      void this.connect().catch(() => {});
+    }, RECONNECT_MS);
   }
 
   private request(path: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const req = http.get({ socketPath: this.cfg.sockPath, path, timeout: 5000 }, (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`Docker HTTP ${res.statusCode ?? 'sin status'} en ${path}`));
+          return;
+        }
         let data = '';
         res.setEncoding('utf8');
         res.on('data', (c) => (data += c));

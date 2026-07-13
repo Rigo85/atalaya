@@ -19,7 +19,7 @@ interface Logger {
 /**
  * Clases de evento → acción:
  *   critical → SMS inmediato (priority critical)
- *   warning  → SMS con dedup_key (priority high; el gateway agrupa "×N")
+ *   warning  → SMS con dedup_key (priority high; repeticiones suprimidas y contabilizadas)
  *   info     → contador local, va en el digest diario
  */
 export class Dispatcher {
@@ -40,10 +40,11 @@ export class Dispatcher {
       return;
     }
     this.state.incrAlert(event.level);
-    await this.gateway.send({
+    const result = await this.gateway.send({
       message: event.message ?? event.tag,
       priority: event.level === 'critical' ? 'critical' : 'high',
       dedupKey: event.dedupKey,
     });
+    this.state.recordGateway(result.outcome);
   }
 }

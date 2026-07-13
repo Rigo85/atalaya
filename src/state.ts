@@ -6,6 +6,9 @@ export interface DayStats {
   info: Record<string, number>;
   critical: number;
   warning: number;
+  accepted: number;
+  deduplicated: number;
+  rejected: number;
 }
 
 interface StateData {
@@ -21,7 +24,10 @@ export function localDay(d = new Date()): string {
 }
 
 function emptyDay(): DayStats {
-  return { day: localDay(), info: {}, critical: 0, warning: 0 };
+  return {
+    day: localDay(), info: {}, critical: 0, warning: 0,
+    accepted: 0, deduplicated: 0, rejected: 0,
+  };
 }
 
 export class StateStore {
@@ -32,7 +38,7 @@ export class StateStore {
     this.path = path;
     if (existsSync(path)) {
       try {
-        this.data = JSON.parse(readFileSync(path, 'utf8')) as StateData;
+        this.data = normalizeState(JSON.parse(readFileSync(path, 'utf8')) as Partial<StateData>);
       } catch {
         this.data = { today: emptyDay(), lastDigestDate: '', expectedContainers: [], history: [] };
       }
@@ -57,6 +63,11 @@ export class StateStore {
     this.persist();
   }
 
+  recordGateway(outcome: 'accepted' | 'deduplicated' | 'rejected'): void {
+    this.data.today[outcome]++;
+    this.persist();
+  }
+
   /** cierra el periodo actual (llamado por el digest tras enviarse) */
   rotate(digestDay: string): void {
     this.data.history.unshift(this.data.today);
@@ -71,18 +82,46 @@ export class StateStore {
     this.persist();
   }
 
-  addExpectedContainer(name: string): void {
+  addExpectedContainer(name: string): boolean {
     if (!this.data.expectedContainers.includes(name)) {
       this.data.expectedContainers.push(name);
+      this.data.expectedContainers.sort();
       this.persist();
+      return true;
     }
+    return false;
   }
 
-  removeExpectedContainer(name: string): void {
+  removeExpectedContainer(name: string): boolean {
     const i = this.data.expectedContainers.indexOf(name);
     if (i >= 0) {
       this.data.expectedContainers.splice(i, 1);
       this.persist();
+      return true;
     }
+    return false;
   }
+}
+
+function normalizeState(raw: Partial<StateData>): StateData {
+  return {
+    today: normalizeDay(raw.today),
+    lastDigestDate: typeof raw.lastDigestDate === 'string' ? raw.lastDigestDate : '',
+    expectedContainers: Array.isArray(raw.expectedContainers)
+      ? [...new Set(raw.expectedContainers.filter((name): name is string => typeof name === 'string'))].sort()
+      : [],
+    history: Array.isArray(raw.history) ? raw.history.map(normalizeDay) : [],
+  };
+}
+
+function normalizeDay(raw?: Partial<DayStats>): DayStats {
+  return {
+    day: typeof raw?.day === 'string' ? raw.day : localDay(),
+    info: raw?.info && typeof raw.info === 'object' ? raw.info : {},
+    critical: Number(raw?.critical ?? 0),
+    warning: Number(raw?.warning ?? 0),
+    accepted: Number(raw?.accepted ?? 0),
+    deduplicated: Number(raw?.deduplicated ?? 0),
+    rejected: Number(raw?.rejected ?? 0),
+  };
 }

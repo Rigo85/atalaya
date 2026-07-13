@@ -1,6 +1,8 @@
+import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DockerWatcher, type DockerEventMsg } from '../src/adapters/docker-events.js';
-import { Pm2Watcher } from '../src/adapters/pm2-bus.js';
+import { Pm2Watcher, type Pm2Like } from '../src/adapters/pm2-bus.js';
+import { HealthRegistry } from '../src/health.js';
 import { makeDispatcher, silentLog } from './helpers.js';
 
 function dockerEvent(name: string, action: string, exitCode?: number): DockerEventMsg {
@@ -46,14 +48,14 @@ describe('DockerWatcher (reglas)', () => {
     expect(sent[0]).toMatchObject({ priority: 'high', dedupKey: 'docker:restart:mi-redis' });
   });
 
-  it('stop ordenado (exit 0) → sin SMS, cuenta en digest y sale del inventario', async () => {
+  it('stop ordenado (exit 0) → sin SMS, cuenta en digest y conserva el inventario', async () => {
     const { watcher, sent, state } = makeWatcher();
     state.addExpectedContainer('it-tools');
     watcher.handleEvent(dockerEvent('it-tools', 'die', 0));
     await vi.advanceTimersByTimeAsync(120_000);
     expect(sent).toHaveLength(0);
     expect(state.data.today.info['docker.stop']).toBe(1);
-    expect(state.data.expectedContainers).not.toContain('it-tools');
+    expect(state.data.expectedContainers).toContain('it-tools');
   });
 
   it('oom → critical directo; unhealthy → warning; ignorados no reportan', async () => {
@@ -113,5 +115,37 @@ describe('Pm2Watcher (reglas)', () => {
     await watcher.handleEvent({ event: 'stop', process: { name: 'tablut' } });
     expect(sent).toHaveLength(0);
     expect(state.data.today.info['pm2.stop']).toBe(1);
+  });
+
+  it('registra conexión, eventos, reconexión y libera listeners al parar', () => {
+    const ctx = makeDispatcher();
+    const health = new HealthRegistry();
+    const bus = new EventEmitter();
+    const socket = new EventEmitter();
+    const disconnect = vi.fn();
+    const pm2: Pm2Like = {
+      connect: (callback) => callback(),
+      launchBus: (callback) => callback(undefined, bus, socket),
+      disconnect,
+    };
+    const watcher = new Pm2Watcher(
+      ctx.dispatcher,
+      { stormCount: 3, stormWindowMs: 600_000, selfName: 'atalaya' },
+      silentLog,
+      Date.now,
+      health,
+      () => pm2,
+    );
+    watcher.start();
+    expect(health.snapshot().pm2.connected).toBe(true);
+    bus.emit('process:event', { event: 'online', process: { name: 'x' } });
+    expect(health.snapshot().pm2.lastEventAt).not.toBeNull();
+    socket.emit('close');
+    expect(health.snapshot().pm2.connected).toBe(false);
+    socket.emit('connect');
+    expect(health.snapshot().pm2).toMatchObject({ connected: true, reconnects: 1 });
+    watcher.stop();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(bus.listenerCount('process:event')).toBe(0);
   });
 });

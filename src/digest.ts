@@ -1,5 +1,6 @@
 import type { GatewayClient } from './gateway.js';
 import { localDay, type StateStore } from './state.js';
+import type { HealthRegistry } from './health.js';
 
 interface Logger {
   info: (obj: object, msg: string) => void;
@@ -20,6 +21,7 @@ export class DigestScheduler {
   private log: Logger;
   private now: () => Date;
   private timer?: NodeJS.Timeout;
+  private inFlight = false;
 
   constructor(
     gateway: GatewayClient,
@@ -27,6 +29,7 @@ export class DigestScheduler {
     hour: number,
     log: Logger,
     now: () => Date = () => new Date(),
+    private health?: HealthRegistry,
   ) {
     this.gateway = gateway;
     this.state = state;
@@ -36,28 +39,36 @@ export class DigestScheduler {
   }
 
   start(): void {
+    if (this.timer) return;
     this.timer = setInterval(() => void this.tick(), CHECK_EVERY_MS);
   }
 
   stop(): void {
     clearInterval(this.timer);
+    this.timer = undefined;
   }
 
   async tick(): Promise<void> {
+    if (this.inFlight) return;
     const n = this.now();
     const day = localDay(n);
     if (n.getHours() < this.hour || this.state.data.lastDigestDate === day) return;
-    const message = this.compose();
-    const ok = await this.gateway.send({
-      message,
-      priority: 'normal',
-      dedupKey: `atalaya:digest:${day}`,
-    });
-    if (ok) {
-      this.state.rotate(day);
-      this.log.info({ message }, 'digest enviado');
-    } else {
-      this.log.error({}, 'no se pudo enviar el digest; se reintentará en el próximo tick');
+    this.inFlight = true;
+    try {
+      const message = this.compose();
+      const result = await this.gateway.send({
+        message,
+        priority: 'normal',
+        dedupKey: `atalaya:digest:${day}`,
+      });
+      if (result.outcome === 'accepted' || result.outcome === 'deduplicated') {
+        this.state.rotate(day);
+        this.log.info({ message, outcome: result.outcome }, 'digest aceptado');
+      } else {
+        this.log.error({}, 'no se pudo enviar el digest; se reintentará en el próximo tick');
+      }
+    } finally {
+      this.inFlight = false;
     }
   }
 
@@ -69,6 +80,11 @@ export class DigestScheduler {
     const parts: string[] = [];
     if (t.critical > 0) parts.push(`${t.critical} critico${t.critical > 1 ? 's' : ''}`);
     if (t.warning > 0) parts.push(`${t.warning} aviso${t.warning > 1 ? 's' : ''}`);
+    if (t.accepted > 0) parts.push(`${t.accepted} aceptado${t.accepted > 1 ? 's' : ''}`);
+    if (t.deduplicated > 0) parts.push(`${t.deduplicated} dedup`);
+    if (t.rejected > 0) parts.push(`${t.rejected} rechazado${t.rejected > 1 ? 's' : ''}`);
+    const degraded = this.health?.degraded() ?? [];
+    if (degraded.length) parts.unshift(`DEGRADADO ${degraded.join('+')}`);
     const top = Object.entries(t.info)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)

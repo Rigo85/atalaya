@@ -6,6 +6,7 @@ import { Dispatcher } from './dispatcher.js';
 import { DigestScheduler } from './digest.js';
 import { DockerWatcher } from './adapters/docker-events.js';
 import { Pm2Watcher } from './adapters/pm2-bus.js';
+import { HealthRegistry } from './health.js';
 
 const log = pino({ level: config.logLevel });
 
@@ -15,18 +16,22 @@ const gateway = new GatewayClient(
   log,
 );
 const dispatcher = new Dispatcher(gateway, state, log);
+const health = new HealthRegistry();
 
-const digest = new DigestScheduler(gateway, state, config.digestHour, log);
+const digest = new DigestScheduler(gateway, state, config.digestHour, log, undefined, health);
 const docker = new DockerWatcher(
   dispatcher,
   state,
   { sockPath: config.dockerSock, downGraceMs: config.downGraceMs, ignore: config.dockerIgnore },
   log,
+  health,
 );
 const pm2Watcher = new Pm2Watcher(
   dispatcher,
   { stormCount: config.stormCount, stormWindowMs: config.stormWindowMs, selfName: 'atalaya' },
   log,
+  Date.now,
+  health,
 );
 
 digest.start();
@@ -41,11 +46,16 @@ log.info(
   'atalaya observando',
 );
 
-const shutdown = (signal: string): void => {
+let shuttingDown = false;
+const shutdown = async (signal: string): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   log.info({ signal }, 'apagando');
   digest.stop();
   docker.stop();
+  pm2Watcher.stop();
+  gateway.stop();
   process.exit(0);
 };
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
