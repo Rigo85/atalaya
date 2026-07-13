@@ -33,5 +33,13 @@ pm2 start ecosystem.config.cjs && pm2 save
 Estado local en `state.json` (contadores del digest, inventario docker). Sin base de datos.
 
 ```bash
-npm test   # 13 tests (reglas de adapters, dispatcher, digest)
+npm test   # reglas de adapters, dispatcher, digest y contrato con el gateway
 ```
+
+## Respuestas del gateway
+
+- `2xx queued` y una deduplicación legítima confirman aceptación.
+- `2xx suppressed` sin deduplicación no se contabiliza como aceptación.
+- `429` indica que la protección de capacidad rechazó una alerta no crítica; no se reintenta.
+- `503` en una alerta crítica admite hasta tres intentos totales, respetando `Retry-After`
+  con un máximo de cinco minutos por espera.
