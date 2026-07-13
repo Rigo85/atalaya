@@ -71,7 +71,7 @@ export class DockerWatcher {
       await this.dispatcher.emit({
         level: 'warning',
         tag: 'docker.missing',
-        message: `[DOCKER] ${name} no esta corriendo (estaba en el inventario)`,
+        message: `DOCKER: ${name} no esta corriendo (estaba en el inventario)`,
         dedupKey: `docker:missing:${name}`,
       });
     }
@@ -99,7 +99,7 @@ export class DockerWatcher {
         void this.dispatcher.emit({
           level: 'critical',
           tag: 'docker.down',
-          message: `[DOCKER] ${name} caido (exit ${exitCode}) y no volvio en ${this.cfg.downGraceMs / 1000}s`,
+          message: `DOCKER: ${name} caido (exit ${exitCode}) y no volvio en ${this.cfg.downGraceMs / 1000}s`,
           dedupKey: `docker:down:${name}`,
         });
       }, this.cfg.downGraceMs);
@@ -115,7 +115,7 @@ export class DockerWatcher {
         void this.dispatcher.emit({
           level: 'warning',
           tag: 'docker.restart',
-          message: `[DOCKER] ${name} se reinicio solo`,
+          message: `DOCKER: ${name} se reinicio solo`,
           dedupKey: `docker:restart:${name}`,
         });
       } else {
@@ -129,7 +129,7 @@ export class DockerWatcher {
       void this.dispatcher.emit({
         level: 'critical',
         tag: 'docker.oom',
-        message: `[DOCKER] ${name} sin memoria (OOM)`,
+        message: `DOCKER: ${name} sin memoria (OOM)`,
         dedupKey: `docker:oom:${name}`,
       });
       return;
@@ -139,7 +139,7 @@ export class DockerWatcher {
       void this.dispatcher.emit({
         level: 'warning',
         tag: 'docker.unhealthy',
-        message: `[DOCKER] ${name} reporta unhealthy`,
+        message: `DOCKER: ${name} reporta unhealthy`,
         dedupKey: `docker:unhealthy:${name}`,
       });
     }

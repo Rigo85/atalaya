@@ -6,14 +6,14 @@ import { fakeGateway, makeDispatcher, silentLog, tempState } from './helpers.js'
 describe('Dispatcher', () => {
   it('critical → SMS priority critical', async () => {
     const { dispatcher, sent } = makeDispatcher();
-    await dispatcher.emit({ level: 'critical', tag: 'docker.down', message: '[DOCKER] x caido' });
+    await dispatcher.emit({ level: 'critical', tag: 'docker.down', message: 'DOCKER: x caido' });
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ message: '[DOCKER] x caido', priority: 'critical' });
+    expect(sent[0]).toMatchObject({ message: 'DOCKER: x caido', priority: 'critical' });
   });
 
   it('warning → SMS priority high con dedup', async () => {
     const { dispatcher, sent } = makeDispatcher();
-    await dispatcher.emit({ level: 'warning', tag: 'pm2.restart', message: '[PM2] y', dedupKey: 'pm2:restart:y' });
+    await dispatcher.emit({ level: 'warning', tag: 'pm2.restart', message: 'PM2: y', dedupKey: 'pm2:restart:y' });
     expect(sent[0]).toMatchObject({ priority: 'high', dedupKey: 'pm2:restart:y' });
   });
 

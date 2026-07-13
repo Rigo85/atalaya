@@ -78,7 +78,7 @@ export class Pm2Watcher {
       await this.dispatcher.emit({
         level: 'critical',
         tag: 'pm2.errored',
-        message: `[PM2] ${name} en estado errored (pm2 se rindio)`,
+        message: `PM2: ${name} en estado errored (pm2 se rindio)`,
         dedupKey: `pm2:errored:${name}`,
       });
       return;
@@ -97,7 +97,7 @@ export class Pm2Watcher {
           await this.dispatcher.emit({
             level: 'critical',
             tag: 'pm2.storm',
-            message: `[PM2] ${name} en bucle de reinicios (${recent.length} en ${this.cfg.stormWindowMs / 60000} min)`,
+            message: `PM2: ${name} en bucle de reinicios (${recent.length} en ${this.cfg.stormWindowMs / 60000} min)`,
             dedupKey: `pm2:storm:${name}`,
           });
         }
@@ -106,7 +106,7 @@ export class Pm2Watcher {
       await this.dispatcher.emit({
         level: 'warning',
         tag: 'pm2.restart',
-        message: `[PM2] ${name} se reinicio`,
+        message: `PM2: ${name} se reinicio`,
         dedupKey: `pm2:restart:${name}`,
       });
       return;
