@@ -338,4 +338,22 @@ describe('JellyfinMonitor', () => {
     expect(events.sent[0]?.message).toContain('red local');
     expect(located).toHaveLength(0);
   });
+
+  it('vuelve a resolver GeoIP cuando una sesion pasa de red local a publica', async () => {
+    const { incidents, state } = setup();
+    const events = fakeGateway();
+    const dispatcher = new Dispatcher(events.client, state, silentLog);
+    let endpoint = '192.168.1.20:8096';
+    const located: string[] = [];
+    const monitor = new JellyfinMonitor({ url: 'http://jellyfin.test', apiKey: 'key', intervalMs: 60_000 },
+      'live', dispatcher, incidents, state, new HealthRegistry(), silentLog,
+      (async () => Response.json([{ Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: endpoint }])) as typeof fetch,
+      async (ip) => { located.push(ip); return 'Santiago, Chile'; });
+
+    await monitor.tick();
+    endpoint = '198.51.100.20:8096';
+    await monitor.tick();
+
+    expect(located).toEqual(['198.51.100.20']);
+  });
 });

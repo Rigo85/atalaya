@@ -133,7 +133,7 @@ export class JellyfinMonitor {
     let location = previous?.location ?? 'ubicacion no disponible';
     if (ip && isPrivateIp(ip)) {
       location = 'red local';
-    } else if (ip && (!previous || location === 'ubicacion no disponible')) {
+    } else if (ip && (!previous || location === 'ubicacion no disponible' || location === 'red local')) {
       try {
         location = await this.locateIp(ip);
       } catch {
