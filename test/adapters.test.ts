@@ -210,6 +210,7 @@ describe('NavidromeMonitor', () => {
   it('clasifica fallos de actividad sin exponer detalles sensibles', () => {
     expect(activityFailureReason(new DOMException('timed out', 'TimeoutError'))).toBe('timeout');
     expect(activityFailureReason(new TypeError('fetch failed'))).toBe('network');
+    expect(activityFailureReason(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }))).toBe('network_econnreset');
     expect(activityFailureReason(new SyntaxError('Unexpected token'))).toBe('invalid_json');
   });
 
@@ -231,6 +232,52 @@ describe('NavidromeMonitor', () => {
     await monitor.tick();
 
     expect(warnings).toContainEqual({ reason });
+  });
+
+  it('reintenta una vez una desconexion transitoria antes de abrir incidente', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const infos: object[] = [];
+    let activityCalls = 0;
+    const log = { info: (obj: object) => infos.push(obj), warn: () => {} };
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (String(url).endsWith('/ping')) return new Response('ok', { status: 200 });
+      activityCalls += 1;
+      if (activityCalls === 1) throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } });
+      return new Response(JSON.stringify({ 'subsonic-response': { status: 'ok', nowPlaying: { entry: [] } } }), { status: 200 });
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
+    }, 'live', dispatcher, new IncidentManager(state, dispatcher, 'live', log), state, new HealthRegistry(), log, fetchFn);
+
+    await monitor.tick();
+
+    expect(activityCalls).toBe(2);
+    expect(sent).toHaveLength(0);
+    expect(state.getIncident('navidrome.activity')).toBeUndefined();
+    expect(infos).toContainEqual({ reason: 'network_econnreset' });
+  });
+
+  it('acepta una entrada unica y campos no textuales sin abrir incidente', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const warnings: object[] = [];
+    const log = { info: () => {}, warn: (obj: object) => warnings.push(obj) };
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (String(url).endsWith('/ping')) return new Response('ok', { status: 200 });
+      return new Response(JSON.stringify({
+        'subsonic-response': { status: 'ok', nowPlaying: { entry: {
+          id: 101, title: 'Tema', artist: null, album: { invalid: true }, username: 'usuario', playerId: 7,
+        } } },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
+    }, 'live', dispatcher, new IncidentManager(state, dispatcher, 'live', log), state, new HealthRegistry(), log, fetchFn);
+
+    await monitor.tick();
+
+    expect(sent).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+    expect(state.getServiceBaseline('navidrome.initialized')).toBe('1');
   });
 
   it('establece baseline, informa cambios de tema y valida metricas', async () => {

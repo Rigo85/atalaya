@@ -278,15 +278,15 @@ describe('JellyfinMonitor', () => {
     const fetchFn = vi.fn(async () => {
       round++;
       if (round === 1) return Response.json([{
-        Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: '198.51.100.15:8096',
+        Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: '198.51.100.15:8096:extra',
       }]);
       if (round === 2) return Response.json([{
-        Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: '198.51.100.15:8096',
+        Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: '198.51.100.15:8096:extra',
         NowPlayingItem: { SeriesName: 'Serie', Name: 'Episodio 1' },
       }]);
       return Response.json([
         {
-          Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: '198.51.100.15:8096',
+          Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: '198.51.100.15:8096:extra',
           NowPlayingItem: { SeriesName: 'Serie', Name: 'Episodio 1' },
         },
         {
@@ -319,5 +319,23 @@ describe('JellyfinMonitor', () => {
     expect(state.data.today.info['jellyfin.session-new']).toBe(1);
     expect(located).toEqual(['198.51.100.15', '203.0.113.16']);
     expect(health.snapshot().jellyfin.connected).toBe(true);
+  });
+
+  it('identifica sesiones privadas como red local sin consultarlas en GeoIP', async () => {
+    const { incidents, state } = setup();
+    const events = fakeGateway();
+    const dispatcher = new Dispatcher(events.client, state, silentLog);
+    const located: string[] = [];
+    const monitor = new JellyfinMonitor({ url: 'http://jellyfin.test', apiKey: 'key', intervalMs: 60_000 },
+      'live', dispatcher, incidents, state, new HealthRegistry(), silentLog,
+      (async () => Response.json([{ Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: '192.168.1.20:8096' }])) as typeof fetch,
+      async (ip) => { located.push(ip); return 'no deberia usarse'; });
+
+    await monitor.tick();
+    state.removeServiceBaseline('jellyfin.session.s1');
+    await monitor.tick();
+
+    expect(events.sent[0]?.message).toContain('red local');
+    expect(located).toHaveLength(0);
   });
 });

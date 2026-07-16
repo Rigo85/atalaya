@@ -21,12 +21,12 @@ export interface NavidromeMonitorConfig {
 }
 
 interface NowPlayingEntry {
-  id?: string;
-  title?: string;
-  artist?: string;
-  album?: string;
-  username?: string;
-  playerId?: string;
+  id?: unknown;
+  title?: unknown;
+  artist?: unknown;
+  album?: unknown;
+  username?: unknown;
+  playerId?: unknown;
 }
 
 interface StoredSession {
@@ -94,12 +94,22 @@ export class NavidromeMonitor {
 
   private async checkActivity(): Promise<void> {
     try {
-      await this.consume(await this.nowPlaying());
+      await this.consume(await this.nowPlayingWithRetry());
     } catch (error) {
       this.log.warn({ reason: activityFailureReason(error) }, 'consulta de actividad Navidrome falló');
       await this.incidents.observe({
         key: 'navidrome.activity', severity: 'warning', message: 'NAVIDROME: no se pudo consultar Now Playing',
       });
+    }
+  }
+
+  private async nowPlayingWithRetry(): Promise<NowPlayingEntry[]> {
+    try {
+      return await this.nowPlaying();
+    } catch (error) {
+      if (!isRetryableActivityFailure(error)) throw error;
+      this.log.info({ reason: activityFailureReason(error) }, 'consulta de actividad Navidrome reintentando');
+      return this.nowPlaying();
     }
   }
 
@@ -123,8 +133,7 @@ export class NavidromeMonitor {
     const body = await response.json() as { 'subsonic-response'?: { status?: string; nowPlaying?: { entry?: unknown } } };
     const payload = body['subsonic-response'];
     if (payload?.status !== 'ok') throw new NowPlayingError('rejected');
-    const entries = payload.nowPlaying?.entry ?? [];
-    return Array.isArray(entries) ? entries as NowPlayingEntry[] : [];
+    return normalizeNowPlayingEntries(payload.nowPlaying?.entry);
   }
 
   private async checkMetrics(): Promise<void> {
@@ -192,20 +201,50 @@ export function activityFailureReason(error: unknown): string {
   }
   if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
   if (error instanceof SyntaxError) return 'invalid_json';
-  if (error instanceof TypeError) return 'network';
+  if (error instanceof TypeError) {
+    const code = networkErrorCode(error);
+    if (code) return `network_${code.toLowerCase()}`;
+    return isNetworkTypeError(error) ? 'network' : 'type_error';
+  }
   return 'unknown';
 }
 
+function isRetryableActivityFailure(error: unknown): boolean {
+  if (error instanceof NowPlayingError) return error.reason === 'http' && (error.status ?? 0) >= 500;
+  return (error instanceof TypeError && isNetworkTypeError(error))
+    || (error instanceof DOMException && error.name === 'TimeoutError');
+}
+
+function networkErrorCode(error: TypeError): string | undefined {
+  const cause = (error as TypeError & { cause?: unknown }).cause;
+  if (!cause || typeof cause !== 'object' || !('code' in cause)) return undefined;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? code : undefined;
+}
+
+function isNetworkTypeError(error: TypeError): boolean {
+  return Boolean(networkErrorCode(error)) || error.message === 'fetch failed' || error.message === 'terminated';
+}
+
+function normalizeNowPlayingEntries(value: unknown): NowPlayingEntry[] {
+  if (Array.isArray(value)) return value.filter(isNowPlayingEntry);
+  return isNowPlayingEntry(value) ? [value] : [];
+}
+
+function isNowPlayingEntry(value: unknown): value is NowPlayingEntry {
+  return Boolean(value) && typeof value === 'object';
+}
+
 function toSession(entry: NowPlayingEntry): StoredSession {
-  const user = compact(entry.username ?? 'usuario desconocido', 30);
-  const player = compact(entry.playerId ?? user, 48);
-  const title = compact(entry.title ?? 'tema desconocido', 54);
-  const artist = compact(entry.artist ?? '', 36);
-  const album = compact(entry.album ?? '', 36);
+  const user = compact(entry.username, 30, 'usuario desconocido');
+  const player = compact(entry.playerId, 48, user);
+  const title = compact(entry.title, 54, 'tema desconocido');
+  const artist = compact(entry.artist, 36, '');
+  const album = compact(entry.album, 36, '');
   return {
     user,
     player,
-    mediaId: compact(entry.id ?? `${artist}:${title}:${album}`, 96),
+    mediaId: compact(entry.id, 96, `${artist}:${title}:${album}`),
     media: [artist, title, album ? `(${album})` : ''].filter(Boolean).join(' - '),
   };
 }
@@ -236,7 +275,8 @@ function stableId(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-function compact(value: string, max: number): string {
-  const ascii = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7E]/g, '?');
-  return ascii.replace(/\s+/g, ' ').trim().slice(0, max) || 'sin datos';
+function compact(value: unknown, max: number, fallback: string): string {
+  const text = typeof value === 'string' || typeof value === 'number' ? String(value) : fallback;
+  const ascii = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7E]/g, '?');
+  return ascii.replace(/\s+/g, ' ').trim().slice(0, max) || fallback;
 }

@@ -131,7 +131,9 @@ export class JellyfinMonitor {
   private async toStoredSession(session: JellyfinSession, previous?: StoredSession): Promise<StoredSession> {
     const ip = remoteIp(session.RemoteEndPoint);
     let location = previous?.location ?? 'ubicacion no disponible';
-    if (ip && (!previous || location === 'ubicacion no disponible')) {
+    if (ip && isPrivateIp(ip)) {
+      location = 'red local';
+    } else if (ip && (!previous || location === 'ubicacion no disponible')) {
       try {
         location = await this.locateIp(ip);
       } catch {
@@ -178,9 +180,24 @@ async function mmdbValue(command: string, database: string, ip: string, path: st
 
 function remoteIp(endpoint: string | undefined): string | undefined {
   if (!endpoint) return undefined;
-  if (endpoint.startsWith('[')) return endpoint.slice(1, endpoint.indexOf(']')) || undefined;
-  const colons = [...endpoint].filter((char) => char === ':').length;
-  return colons === 1 ? endpoint.split(':')[0] : endpoint;
+  const value = endpoint.trim();
+  if (value.startsWith('[')) {
+    const ip = value.slice(1, value.indexOf(']'));
+    return isIP(ip) ? ip : undefined;
+  }
+  if (isIP(value)) return value;
+  // Jellyfin puede anexar mas de un sufijo a IPv4; extraemos solo una direccion valida.
+  const ipv4 = value.match(/(?:^|[^0-9])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?=$|[^0-9])/);
+  return ipv4?.[1] && isIP(ipv4[1]) === 4 ? ipv4[1] : undefined;
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (isIP(ip) === 4) {
+    const [a, b = 0] = ip.split('.').map(Number);
+    return a === 10 || a === 127 || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  return ip === '::1' || /^f[cd]/i.test(ip) || /^fe80:/i.test(ip);
 }
 
 function mediaLabel(item: JellyfinSession['NowPlayingItem']): string {
