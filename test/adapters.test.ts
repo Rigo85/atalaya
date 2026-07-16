@@ -4,7 +4,7 @@ import { DockerWatcher, type DockerEventMsg } from '../src/adapters/docker-event
 import { Pm2Watcher, type Pm2Like } from '../src/adapters/pm2-bus.js';
 import { StaticWebMonitor } from '../src/adapters/static-web-monitor.js';
 import { ContainerLogMonitor, aonsokuLogError, navidromeLogError } from '../src/adapters/container-log-monitor.js';
-import { NavidromeMonitor } from '../src/adapters/navidrome-monitor.js';
+import { activityFailureReason, NavidromeMonitor } from '../src/adapters/navidrome-monitor.js';
 import { HealthRegistry } from '../src/health.js';
 import { IncidentManager } from '../src/incidents.js';
 import { makeDispatcher, silentLog } from './helpers.js';
@@ -207,6 +207,32 @@ describe('ContainerLogMonitor', () => {
 });
 
 describe('NavidromeMonitor', () => {
+  it('clasifica fallos de actividad sin exponer detalles sensibles', () => {
+    expect(activityFailureReason(new DOMException('timed out', 'TimeoutError'))).toBe('timeout');
+    expect(activityFailureReason(new TypeError('fetch failed'))).toBe('network');
+    expect(activityFailureReason(new SyntaxError('Unexpected token'))).toBe('invalid_json');
+  });
+
+  it.each([
+    ['http_503', () => new Response('unavailable', { status: 503 })],
+    ['subsonic_rejected', () => new Response(JSON.stringify({ 'subsonic-response': { status: 'failed' } }), { status: 200 })],
+  ])('registra %s sin incluir la respuesta de actividad', async (reason, response) => {
+    const { dispatcher, state } = makeDispatcher();
+    const warnings: object[] = [];
+    const log = { info: () => {}, warn: (obj: object) => warnings.push(obj) };
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (String(url).endsWith('/ping')) return new Response('ok', { status: 200 });
+      return response();
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
+    }, 'live', dispatcher, new IncidentManager(state, dispatcher, 'live', log), state, new HealthRegistry(), log, fetchFn);
+
+    await monitor.tick();
+
+    expect(warnings).toContainEqual({ reason });
+  });
+
   it('establece baseline, informa cambios de tema y valida metricas', async () => {
     const { dispatcher, sent, state } = makeDispatcher();
     const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);

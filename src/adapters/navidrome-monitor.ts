@@ -95,8 +95,8 @@ export class NavidromeMonitor {
   private async checkActivity(): Promise<void> {
     try {
       await this.consume(await this.nowPlaying());
-    } catch {
-      this.log.warn({}, 'consulta de actividad Navidrome falló');
+    } catch (error) {
+      this.log.warn({ reason: activityFailureReason(error) }, 'consulta de actividad Navidrome falló');
       await this.incidents.observe({
         key: 'navidrome.activity', severity: 'warning', message: 'NAVIDROME: no se pudo consultar Now Playing',
       });
@@ -119,10 +119,10 @@ export class NavidromeMonitor {
     url.searchParams.set('c', 'atalaya');
     url.searchParams.set('f', 'json');
     const response = await this.fetchFn(url, { signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) throw new Error(`Navidrome now playing HTTP ${response.status}`);
+    if (!response.ok) throw new NowPlayingError('http', response.status);
     const body = await response.json() as { 'subsonic-response'?: { status?: string; nowPlaying?: { entry?: unknown } } };
     const payload = body['subsonic-response'];
-    if (payload?.status !== 'ok') throw new Error('Navidrome now playing rechazado');
+    if (payload?.status !== 'ok') throw new NowPlayingError('rejected');
     const entries = payload.nowPlaying?.entry ?? [];
     return Array.isArray(entries) ? entries as NowPlayingEntry[] : [];
   }
@@ -177,6 +177,23 @@ export class NavidromeMonitor {
     }
     await this.dispatcher.emit({ level: 'event', tag, message: text, dedupKey });
   }
+}
+
+class NowPlayingError extends Error {
+  constructor(readonly reason: 'http' | 'rejected', readonly status?: number) {
+    super(reason);
+  }
+}
+
+/** Clasifica sin registrar URL, token, credenciales ni metadatos de reproduccion. */
+export function activityFailureReason(error: unknown): string {
+  if (error instanceof NowPlayingError) {
+    return error.reason === 'http' ? `http_${error.status ?? 'unknown'}` : 'subsonic_rejected';
+  }
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
+  if (error instanceof SyntaxError) return 'invalid_json';
+  if (error instanceof TypeError) return 'network';
+  return 'unknown';
 }
 
 function toSession(entry: NowPlayingEntry): StoredSession {
