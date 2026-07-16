@@ -29,7 +29,7 @@ export function fakeGateway(): { client: GatewayClient; sent: SendOptions[]; fai
     return new Response('{}', { status: 202 });
   }) as typeof fetch;
   box.client = new GatewayClient(
-    { url: 'http://gw.test', apiKey: 'k', recipients: ['+51911111111'] },
+    { url: 'http://gw.test', apiKey: 'k', recipients: ['+15555550100'] },
     silentLog,
     fetchFn,
   );

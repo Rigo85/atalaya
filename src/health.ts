@@ -1,4 +1,4 @@
-export type AdapterName = 'docker' | 'pm2';
+export type AdapterName = 'docker' | 'pm2' | 'host' | 'vps' | 'canary' | 'backup' | 'smart' | 'gluetun' | 'qbittorrent' | 'jellyfin' | 'aonsoku' | 'aonsoku-logs' | 'navidrome' | 'navidrome-logs';
 
 export interface AdapterHealth {
   connected: boolean;
@@ -13,6 +13,10 @@ export class HealthRegistry {
 
   constructor(names: AdapterName[] = ['docker', 'pm2']) {
     for (const name of names) this.adapters.set(name, emptyHealth());
+  }
+
+  register(name: AdapterName): void {
+    this.get(name);
   }
 
   connected(name: AdapterName): void {

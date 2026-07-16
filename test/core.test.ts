@@ -102,7 +102,7 @@ describe('DigestScheduler', () => {
       return new Response('{"status":"queued"}', { status: 202 });
     });
     const gateway = new GatewayClient(
-      { url: 'http://gw.test', apiKey: 'k', recipients: ['+51911111111'] },
+      { url: 'http://gw.test', apiKey: 'k', recipients: ['+15555550100'] },
       silentLog,
       fetchFn as typeof fetch,
     );
@@ -116,5 +116,40 @@ describe('DigestScheduler', () => {
 
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(state.data.history).toHaveLength(1);
+  });
+
+  it('divide sin truncar y conserva eventos ocurridos durante un reintento', async () => {
+    const now = new Date('2026-07-12T21:02:00');
+    const state = tempState();
+    for (let i = 0; i < 18; i++) state.incrInfo(`evento-muy-largo-${String(i).padStart(2, '0')}`);
+    const seen: string[] = [];
+    let failures = 0;
+    const fetchFn = vi.fn(async (_url: unknown, init?: { body?: string }) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { message: string; dedup_key: string };
+      seen.push(body.message);
+      if (body.dedup_key.endsWith('core-2') && failures++ < 3) return new Response('{}', { status: 500 });
+      return new Response('{}', { status: 202 });
+    }) as typeof fetch;
+    const gateway = new GatewayClient(
+      { url: 'http://gw.test', apiKey: 'k', recipients: ['+15555550100'] },
+      silentLog,
+      fetchFn,
+      async () => {},
+    );
+    const digest = new DigestScheduler(gateway, state, 21, silentLog, () => now);
+    const parts = digest.composeParts();
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.every((part) => part.message.length <= 160)).toBe(true);
+    expect(parts.map((part) => part.message).join(' ')).toContain('evento-muy-largo-17');
+
+    await digest.tick();
+    expect(state.getPendingDigest()).not.toBeNull();
+    expect(state.data.history).toHaveLength(0);
+    state.incrInfo('evento-posterior');
+    await digest.tick();
+    expect(state.getPendingDigest()).toBeNull();
+    expect(state.data.history).toHaveLength(1);
+    expect(state.data.today.info['evento-posterior']).toBe(1);
+    expect(seen.some((message) => message.includes('evento-muy-largo-17'))).toBe(true);
   });
 });

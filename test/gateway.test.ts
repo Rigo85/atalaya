@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GatewayClient } from '../src/gateway.js';
 
-const cfg = { url: 'http://gateway.test', apiKey: 'key', recipients: ['+51911111111'] };
+const cfg = { url: 'http://gateway.test', apiKey: 'key', recipients: ['+15555550100'] };
 const opts = { message: 'alerta', priority: 'critical' as const };
 
 function logger() {

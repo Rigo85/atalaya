@@ -9,6 +9,7 @@ al [notification-gateway](https://github.com/Rigo85/notification-gateway) como S
 |---|---|
 | crítico | SMS inmediato (contenedor caído >90 s, OOM, proceso pm2 errored, bucle de reinicios) |
 | advertencia | SMS con dedup (reinicio solo, unhealthy); el gateway suprime repeticiones y las contabiliza |
+| actividad | SMS inmediato normal y contador en digest (sesion/reproduccion relevante) |
 | info | contador local → digest diario |
 
 El **digest diario** (hora configurable) se envía siempre, aunque diga "sin novedades":
@@ -25,6 +26,67 @@ detectados de notificaciones aceptadas, deduplicadas y rechazadas por el gateway
 - **pm2-bus**: eventos del daemon PM2 local. Restart suelto → advertencia; ≥3 en
   10 min → crítico (bucle); `errored`/`restart overlimit` → crítico. Instrumenta la
   reconexión nativa del socket PM2 sin abrir una segunda suscripción.
+
+## Hosts
+
+El monitoreo de hosts es opcional y se activa con `HOST_MONITOR_MODE`:
+
+- `off`: no inicia los adapters de host;
+- `dry-run`: evalúa y persiste incidentes, pero no envía sus SMS;
+- `live`: envía aperturas, escalaciones y recuperaciones.
+
+Incluye capacidad y presencia de montajes, inodos, RAM disponible, CPU, iowait,
+temperatura, reloj, reinicios, SMART/ZFS, frescura/retención de backups, canaries HTTP,
+certificados y un snapshot remoto restringido. Los valores altos deben sostenerse durante
+la ventana configurada; disco ausente, solo lectura o SMART fallido son inmediatos.
+
+Los canaries correlacionan fallos simultáneos para evitar un SMS por dominio cuando falla
+la capa común. Una alerta aceptada produce recuperación después de dos lecturas sanas.
+Los críticos abiertos se resumen en el digest sin repetir continuamente el SMS.
+
+Los montajes, URLs, host remoto y rutas privadas viven solo en `.env`. El formato de
+`CANARY_TARGETS` es `nombre|url|status;nombre2|url2|status`.
+
+## Servicios funcionales
+
+Los adapters funcionales se activan solo cuando tienen sus variables privadas en `.env`
+y `HOST_MONITOR_MODE` no es `off`. Con `dry-run` establecen baseline e incidentes sin SMS;
+con `live` notifican segun su regla.
+
+- **Gluetun** comprueba el estado real del VPN mediante un rol API de lectura y cuenta
+  cambios de salida en el digest, sin exponer la IP.
+- **qBittorrent** usa su feed incremental: baseline inicial sin eventos retroactivos,
+  altas/finalizaciones en digest y errores como advertencia.
+- **Jellyfin** establece baseline de sesiones. En `live`, conexiones y cambios de
+  reproduccion son actividad inmediata y tambien se resumen en el digest. La ubicacion
+  aproximada se resuelve contra GeoLite2 City local, nunca mediante un tercero.
+- **Aonsoku** valida la SPA servida por Nginx y su configuracion estatica; no intenta
+  simular reproduccion porque es un cliente de Navidrome/Subsonic, no un backend propio.
+  Sus errores Nginx se agrupan en el digest y tres o mas en un intervalo abren aviso.
+- **Navidrome** comprueba `/ping`, consulta `Now Playing` con una cuenta tecnica y envia
+  inicio/cambio de tema en `live`. Las sesiones que terminan y los errores de log van al
+  digest; tres o mas errores en un intervalo abren aviso. Si se configura, valida tambien
+  el endpoint Prometheus protegido sin registrar su ruta ni sus credenciales.
+
+Los nombres de usuario y media que Jellyfin/qBittorrent deban conservar para comparar
+eventos quedan solamente en `state.json`, que esta ignorado por Git. Las notificaciones
+no incluyen IP completa, rutas, tokens ni contenido de archivos.
+
+### Privilegios mínimos
+
+`scripts/atalaya-smart-snapshot.py` se instala como helper root fijo y Atalaya solo recibe
+permiso `sudo` para esa ruta exacta. Los helpers `atalaya-vps-*` se instalan en el VPS y la
+clave pública de bluetv se restringe con `command=...` y `restrict`: únicamente acepta los
+comandos lógicos `host` y `egress`, nunca una shell remota.
+
+El helper de egress usa OCI Monitoring con instance principal y entrega únicamente bytes
+del día y del mes calendario en `America/Lima`; no copia una API key OCI al host local.
+
+### Digest sin pérdida
+
+El digest se conserva como un SMS mientras cabe. Si crece, genera partes semánticas de
+máximo 160 caracteres con deduplicación independiente. El snapshot queda persistido hasta
+que todas las partes sean aceptadas, sin truncar ni perder eventos posteriores.
 
 ## Uso
 

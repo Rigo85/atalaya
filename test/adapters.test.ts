@@ -2,7 +2,11 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DockerWatcher, type DockerEventMsg } from '../src/adapters/docker-events.js';
 import { Pm2Watcher, type Pm2Like } from '../src/adapters/pm2-bus.js';
+import { StaticWebMonitor } from '../src/adapters/static-web-monitor.js';
+import { ContainerLogMonitor, aonsokuLogError, navidromeLogError } from '../src/adapters/container-log-monitor.js';
+import { NavidromeMonitor } from '../src/adapters/navidrome-monitor.js';
 import { HealthRegistry } from '../src/health.js';
+import { IncidentManager } from '../src/incidents.js';
 import { makeDispatcher, silentLog } from './helpers.js';
 
 function dockerEvent(name: string, action: string, exitCode?: number): DockerEventMsg {
@@ -147,5 +151,90 @@ describe('Pm2Watcher (reglas)', () => {
     watcher.stop();
     expect(disconnect).toHaveBeenCalledOnce();
     expect(bus.listenerCount('process:event')).toBe(0);
+  });
+});
+
+describe('StaticWebMonitor', () => {
+  it('comprueba inicio y configuracion; avisa tras dos fallos', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);
+    let failing = false;
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (failing && String(url).endsWith('env-config.js')) return new Response('', { status: 503 });
+      const html = String(url).endsWith('env-config.js') ? 'window.env={}' : '<html></html>';
+      return new Response(html, { status: 200, headers: { 'content-type': String(url).endsWith('.js') ? 'application/javascript' : 'text/html' } });
+    }) as typeof fetch;
+    const monitor = new StaticWebMonitor(
+      { name: 'aonsoku', url: 'http://aonsoku.test', requiredPaths: ['/', '/env-config.js'], intervalMs: 60_000 },
+      incidents, new HealthRegistry(), silentLog, fetchFn,
+    );
+
+    await monitor.tick();
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    failing = true;
+    await monitor.tick();
+    expect(sent).toHaveLength(0);
+    await monitor.tick();
+    expect(sent[0]).toMatchObject({ priority: 'high' });
+    expect(sent[0]?.message).toContain('AONSOKU');
+  });
+});
+
+describe('ContainerLogMonitor', () => {
+  it('usa baseline sin SMS y avisa solo cuando el umbral se supera', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const now = { value: new Date('2026-07-15T10:00:00Z') };
+    const incidents = new IncidentManager(state, dispatcher, 'live', silentLog, () => now.value);
+    let lines = ['2026-07-15T09:59:59Z level=warn error=40'];
+    const monitor = new ContainerLogMonitor({
+      container: 'navidrome', adapter: 'navidrome-logs', stateKey: 'test.logs.cursor', tag: 'navidrome',
+      incidentKey: 'navidrome.logs', serviceLabel: 'NAVIDROME', intervalMs: 60_000,
+      errorThreshold: 3, matchesError: navidromeLogError,
+    }, incidents, state, new HealthRegistry(), silentLog, async () => lines, () => now.value);
+
+    await monitor.tick();
+    expect(sent).toHaveLength(0);
+    expect(state.data.today.info['navidrome.log-baseline']).toBe(1);
+
+    now.value = new Date('2026-07-15T10:01:00Z');
+    lines = ['level=error msg=x', 'level=warn error=40', 'panic: x'];
+    await monitor.tick();
+    expect(sent[0]).toMatchObject({ priority: 'high' });
+    expect(sent[0]?.message).toContain('3 errores');
+    expect(aonsokuLogError('x 502 y')).toBe(true);
+    expect(aonsokuLogError('x 404 y')).toBe(false);
+  });
+});
+
+describe('NavidromeMonitor', () => {
+  it('establece baseline, informa cambios de tema y valida metricas', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);
+    let title = 'Tema uno';
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      const value = String(url);
+      if (value.endsWith('/ping')) return new Response('ok', { status: 200 });
+      if (value.includes('metrics-private')) return new Response('# HELP navidrome_test test\n', { status: 200 });
+      return new Response(JSON.stringify({
+        'subsonic-response': { status: 'ok', nowPlaying: { entry: [{
+          id: title, title, artist: 'Artista', album: 'Album', username: 'usuario', playerId: 'player-1',
+        }] } },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret',
+      metricsUrl: 'http://navidrome.test/metrics-private', metricsPassword: 'metric-secret', intervalMs: 60_000,
+    }, 'live', dispatcher, incidents, state, new HealthRegistry(), silentLog, fetchFn);
+
+    await monitor.tick();
+    expect(sent).toHaveLength(0);
+    expect(state.getServiceBaseline('navidrome.initialized')).toBe('1');
+
+    title = 'Tema dos';
+    await monitor.tick();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ priority: 'normal' });
+    expect(sent[0]?.message).toContain('NAVIDROME: usuario reproduce Artista - Tema dos');
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/rest/getNowPlaying.view'))).toBe(true);
   });
 });
