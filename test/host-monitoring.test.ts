@@ -38,7 +38,7 @@ function setup(mode: 'dry-run' | 'live' = 'live') {
   const gateway = fakeGateway();
   const dispatcher = new Dispatcher(gateway.client, state, silentLog);
   const incidents = new IncidentManager(state, dispatcher, mode, silentLog);
-  return { state, sent: gateway.sent, incidents };
+  return { state, sent: gateway.sent, dispatcher, incidents };
 }
 
 function healthySnapshot(): HostSnapshot {
@@ -80,7 +80,7 @@ describe('IncidentManager', () => {
 
 describe('HostMonitor', () => {
   it('aplica umbral de disco y recuperación en dos lecturas', async () => {
-    const { incidents, sent, state } = setup();
+    const { dispatcher, incidents, sent, state } = setup();
     const health = new HealthRegistry();
     let snapshot = healthySnapshot();
     const monitor = new HostMonitor(
@@ -224,7 +224,7 @@ describe('GluetunMonitor', () => {
 
 describe('QbittorrentMonitor', () => {
   it('usa el baseline inicial, cuenta altas/finalizaciones y abre errores sin rutas', async () => {
-    const { incidents, sent, state } = setup();
+    const { dispatcher, incidents, sent, state } = setup();
     const health = new HealthRegistry();
     let round = 0;
     const fetchFn = vi.fn(async (url: string | URL) => {
@@ -248,7 +248,7 @@ describe('QbittorrentMonitor', () => {
     }) as typeof fetch;
     const monitor = new QbittorrentMonitor({
       url: 'http://qbit.test', username: 'monitor', password: 'x', intervalMs: 60_000,
-    }, incidents, state, health, silentLog, fetchFn);
+    }, dispatcher, incidents, state, health, silentLog, fetchFn);
 
     await monitor.tick();
     expect(sent).toHaveLength(0);
@@ -257,9 +257,13 @@ describe('QbittorrentMonitor', () => {
     await monitor.tick();
     expect(state.data.today.info['qbit.download-new']).toBe(1);
     expect(state.data.today.info['qbit.download-complete']).toBe(1);
-    expect(sent[0]?.message).toContain('descarga con error');
-    expect(sent[0]?.message).toContain('documento privado');
-    expect(sent[0]?.message).not.toContain('/');
+    expect(sent[0]).toMatchObject({ priority: 'normal' });
+    expect(sent[0]?.message).toContain('descarga finalizada');
+    expect(sent[0]?.message).toContain('inicial');
+    expect(sent[0]?.dedupKey).toMatch(/^qbit:complete:[a-f0-9]{16}$/);
+    expect(sent[1]?.message).toContain('descarga con error');
+    expect(sent[1]?.message).toContain('documento privado');
+    expect(sent[1]?.message).not.toContain('/');
 
     await monitor.tick();
     await monitor.tick();

@@ -56,7 +56,7 @@ con `live` notifican segun su regla.
 - **Gluetun** comprueba el estado real del VPN mediante un rol API de lectura y cuenta
   cambios de salida en el digest, sin exponer la IP.
 - **qBittorrent** usa su feed incremental: baseline inicial sin eventos retroactivos,
-  altas/finalizaciones en digest y errores como advertencia.
+  altas en digest, finalizaciones por SMS inmediato normal y errores como advertencia.
 - **Jellyfin** establece baseline de sesiones. En `live`, conexiones y cambios de
   reproduccion son actividad inmediata y tambien se resumen en el digest. La ubicacion
   aproximada se resuelve contra GeoLite2 City local, nunca mediante un tercero.
@@ -64,11 +64,13 @@ con `live` notifican segun su regla.
   simular reproduccion porque es un cliente de Navidrome/Subsonic, no un backend propio.
   Sus errores Nginx se agrupan en el digest y tres o mas en un intervalo abren aviso.
 - **Navidrome** comprueba `/ping`, consulta `Now Playing` con una cuenta tecnica y envia
-  inicio/cambio de tema en `live`. Las sesiones que terminan y los errores de log van al
-  digest; tres o mas errores en un intervalo abren aviso. Si se configura, valida tambien
-  el endpoint Prometheus protegido sin registrar su ruta ni sus credenciales.
+  inicio/cambio de tema en `live`. Si se habilita la correlacion efimera del proxy,
+  puede sumar ciudad/pais aproximados sin persistir IP. Las sesiones que terminan y los
+  errores de log van al digest; tres o mas errores en un intervalo abren aviso. Si se
+  configura, valida tambien el endpoint Prometheus protegido sin registrar su ruta ni
+  sus credenciales.
 
-Los nombres de usuario y media que Jellyfin/qBittorrent deban conservar para comparar
+Los nombres de usuario y media que Jellyfin/qBittorrent/Navidrome deban conservar para comparar
 eventos quedan solamente en `state.json`, que esta ignorado por Git. Las notificaciones
 no incluyen IP completa, rutas, tokens ni contenido de archivos.
 
@@ -77,7 +79,7 @@ no incluyen IP completa, rutas, tokens ni contenido de archivos.
 `scripts/atalaya-smart-snapshot.py` se instala como helper root fijo y Atalaya solo recibe
 permiso `sudo` para esa ruta exacta. Los helpers `atalaya-vps-*` se instalan en el VPS y la
 clave pública de bluetv se restringe con `command=...` y `restrict`: únicamente acepta los
-comandos lógicos `host` y `egress`, nunca una shell remota.
+comandos lógicos `host`, `egress` y `navidrome-clients`, nunca una shell remota.
 
 El helper de egress usa OCI Monitoring con instance principal y entrega únicamente bytes
 del día y del mes calendario en `America/Lima`; no copia una API key OCI al host local.

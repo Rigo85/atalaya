@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Dispatcher } from '../dispatcher.js';
 import type { HealthRegistry } from '../health.js';
 import type { IncidentManager, MonitorMode } from '../incidents.js';
@@ -34,9 +35,18 @@ interface StoredSession {
   player: string;
   mediaId: string;
   media: string;
+  location: string;
 }
 
 type FetchLike = typeof fetch;
+type LocateIp = (ip: string) => Promise<string>;
+
+export interface NavidromeClientRecord {
+  user: string;
+  mediaId: string;
+  ip: string;
+  seenAt: string;
+}
 
 /** Estado, reproduccion y metricas de Navidrome sin escribir PII en logs. */
 export class NavidromeMonitor {
@@ -52,6 +62,8 @@ export class NavidromeMonitor {
     private health: HealthRegistry,
     private log: Logger,
     private fetchFn: FetchLike = fetch,
+    private clientRecords?: () => Promise<NavidromeClientRecord[]>,
+    private locateIp: LocateIp = () => Promise.resolve('ubicacion no disponible'),
   ) {
     health.register('navidrome');
   }
@@ -94,12 +106,24 @@ export class NavidromeMonitor {
 
   private async checkActivity(): Promise<void> {
     try {
-      await this.consume(await this.nowPlayingWithRetry());
+      const entries = await this.nowPlayingWithRetry();
+      const records = await this.loadClientRecords();
+      await this.consume(entries, records);
     } catch (error) {
       this.log.warn({ reason: activityFailureReason(error) }, 'consulta de actividad Navidrome falló');
       await this.incidents.observe({
         key: 'navidrome.activity', severity: 'warning', message: 'NAVIDROME: no se pudo consultar Now Playing',
       });
+    }
+  }
+
+  private async loadClientRecords(): Promise<NavidromeClientRecord[]> {
+    if (!this.clientRecords) return [];
+    try {
+      return await this.clientRecords();
+    } catch {
+      this.log.warn({}, 'ubicacion Navidrome no disponible');
+      return [];
     }
   }
 
@@ -153,14 +177,15 @@ export class NavidromeMonitor {
     }
   }
 
-  private async consume(entries: NowPlayingEntry[]): Promise<void> {
+  private async consume(entries: NowPlayingEntry[], records: NavidromeClientRecord[]): Promise<void> {
     const initial = this.state.getServiceBaseline('navidrome.initialized') !== '1';
     const seen = new Set<string>();
     for (const entry of entries) {
-      const current = toSession(entry);
-      const key = `${SESSION_PREFIX}${safeKey(`${current.user}:${current.player}`)}`;
+      const session = toSession(entry);
+      const key = `${SESSION_PREFIX}${safeKey(`${session.user}:${session.player}`)}`;
       seen.add(key);
       const previous = decodeSession(this.state.getServiceBaseline(key));
+      const current = await this.withLocation(session, records, previous);
       if (!initial && !previous) {
         await this.emitActivity('navidrome.session-new', `navidrome:session:${stableId(key)}:${stableId(current.mediaId)}`, message(current));
       } else if (!initial && previous && current.mediaId && current.mediaId !== previous.mediaId) {
@@ -176,6 +201,24 @@ export class NavidromeMonitor {
     }
     this.state.setServiceBaseline('navidrome.initialized', '1');
     await this.incidents.observe({ key: 'navidrome.activity', severity: 'ok', message: 'NAVIDROME: actividad operativa' });
+  }
+
+  private async withLocation(
+    current: StoredSession,
+    records: NavidromeClientRecord[],
+    previous?: StoredSession,
+  ): Promise<StoredSession> {
+    const previousLocation = previous?.mediaId === current.mediaId ? previous.location : '';
+    const matches = records.filter((record) => record.user === current.user && record.mediaId === current.mediaId);
+    const match = matches.length === 1 ? matches[0] : undefined;
+    if (!match) return { ...current, location: previousLocation };
+    try {
+      const location = isPrivateIp(match.ip) ? 'red local' : await this.locateIp(match.ip);
+      return { ...current, location: location === 'ubicacion no disponible' ? '' : location };
+    } catch {
+      this.log.warn({}, 'ubicacion Navidrome no disponible');
+      return { ...current, location: previousLocation };
+    }
   }
 
   private async emitActivity(tag: string, dedupKey: string, text: string): Promise<void> {
@@ -246,11 +289,13 @@ function toSession(entry: NowPlayingEntry): StoredSession {
     player,
     mediaId: compact(entry.id, 96, `${artist}:${title}:${album}`),
     media: [artist, title, album ? `(${album})` : ''].filter(Boolean).join(' - '),
+    location: '',
   };
 }
 
 function message(session: StoredSession): string {
-  return `NAVIDROME: ${session.user} reproduce ${session.media}`;
+  const location = session.location ? ` desde ${session.location}` : '';
+  return `NAVIDROME: ${session.user} reproduce ${session.media}${location}`;
 }
 
 function decodeSession(raw: string | undefined): StoredSession | undefined {
@@ -259,10 +304,19 @@ function decodeSession(raw: string | undefined): StoredSession | undefined {
     const value = JSON.parse(raw) as Partial<StoredSession>;
     if (typeof value.user !== 'string' || typeof value.player !== 'string'
       || typeof value.mediaId !== 'string' || typeof value.media !== 'string') return undefined;
-    return value as StoredSession;
+    return { ...value, location: typeof value.location === 'string' ? value.location : '' } as StoredSession;
   } catch {
     return undefined;
   }
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (isIP(ip) === 4) {
+    const [a, b = 0] = ip.split('.').map(Number);
+    return a === 10 || a === 127 || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  return ip === '::1' || /^f[cd]/i.test(ip) || /^fe80:/i.test(ip);
 }
 
 function safeKey(value: string): string {

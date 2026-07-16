@@ -280,6 +280,86 @@ describe('NavidromeMonitor', () => {
     expect(state.getServiceBaseline('navidrome.initialized')).toBe('1');
   });
 
+  it('asocia el cliente del proxy y emite solo la ubicacion, no la IP', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);
+    let title = 'Tema uno';
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (String(url).endsWith('/ping')) return new Response('ok', { status: 200 });
+      return new Response(JSON.stringify({
+        'subsonic-response': { status: 'ok', nowPlaying: { entry: [{
+          id: title, title, artist: 'Artista', username: 'usuario', playerId: 'substreamer8 [okhttp]',
+        }] } },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
+    }, 'live', dispatcher, incidents, state, new HealthRegistry(), silentLog, fetchFn,
+    async () => [{ user: 'usuario', mediaId: 'Tema dos', ip: '198.51.100.40', seenAt: '2026-07-16T00:00:00Z' }],
+    async () => 'Santiago, Chile');
+
+    await monitor.tick();
+    title = 'Tema dos';
+    await monitor.tick();
+
+    expect(sent[0]?.message).toContain('desde Santiago, Chile');
+    expect(sent[0]?.message).not.toContain('198.51.100.40');
+  });
+
+  it('no infiere ubicacion si la misma pista tiene correlaciones ambiguas', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);
+    let title = 'Tema uno';
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (String(url).endsWith('/ping')) return new Response('ok', { status: 200 });
+      return new Response(JSON.stringify({
+        'subsonic-response': { status: 'ok', nowPlaying: { entry: [{
+          id: title, title, artist: 'Artista', username: 'usuario', playerId: '1',
+        }] } },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
+    }, 'live', dispatcher, incidents, state, new HealthRegistry(), silentLog, fetchFn,
+    async () => [
+      { user: 'usuario', mediaId: 'Tema dos', ip: '198.51.100.40', seenAt: '2026-07-16T00:00:00Z' },
+      { user: 'usuario', mediaId: 'Tema dos', ip: '198.51.100.41', seenAt: '2026-07-16T00:00:01Z' },
+    ], async () => 'Santiago, Chile');
+
+    await monitor.tick();
+    title = 'Tema dos';
+    await monitor.tick();
+
+    expect(sent[0]?.message).not.toContain('desde');
+  });
+
+  it('no reutiliza la ubicacion de una pista anterior sin una correlacion vigente', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);
+    let title = 'Tema uno';
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (String(url).endsWith('/ping')) return new Response('ok', { status: 200 });
+      return new Response(JSON.stringify({
+        'subsonic-response': { status: 'ok', nowPlaying: { entry: [{
+          id: title, title, artist: 'Artista', username: 'usuario', playerId: '1',
+        }] } },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
+    }, 'live', dispatcher, incidents, state, new HealthRegistry(), silentLog, fetchFn,
+    async () => title === 'Tema uno'
+      ? [{ user: 'usuario', mediaId: 'Tema uno', ip: '198.51.100.40', seenAt: '2026-07-16T00:00:00Z' }]
+      : [],
+    async () => 'Santiago, Chile');
+
+    await monitor.tick();
+    title = 'Tema dos';
+    await monitor.tick();
+
+    expect(sent[0]?.message).not.toContain('desde');
+  });
+
   it('establece baseline, informa cambios de tema y valida metricas', async () => {
     const { dispatcher, sent, state } = makeDispatcher();
     const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);

@@ -10,6 +10,13 @@ export interface EgressSnapshot {
   sampledAt: string;
 }
 
+export interface NavidromeClientRecord {
+  user: string;
+  mediaId: string;
+  ip: string;
+  seenAt: string;
+}
+
 export class RemoteVpsClient {
   constructor(
     private host: string,
@@ -33,7 +40,18 @@ export class RemoteVpsClient {
     return { dayBytes, monthBytes, sampledAt };
   }
 
-  private async run<T>(command: 'host' | 'egress'): Promise<T> {
+  async navidromeClients(): Promise<NavidromeClientRecord[]> {
+    const value = await this.run<unknown>('navidrome-clients');
+    if (!Array.isArray(value)) throw new Error('respuesta navidrome-clients inválida');
+    return value.filter((entry): entry is NavidromeClientRecord => {
+      if (!entry || typeof entry !== 'object') return false;
+      const record = entry as Partial<NavidromeClientRecord>;
+      return typeof record.user === 'string' && typeof record.mediaId === 'string'
+        && typeof record.ip === 'string' && typeof record.seenAt === 'string';
+    });
+  }
+
+  private async run<T>(command: 'host' | 'egress' | 'navidrome-clients'): Promise<T> {
     const args = [
       '-o', 'BatchMode=yes',
       '-o', 'ConnectTimeout=8',

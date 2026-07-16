@@ -99,6 +99,7 @@ export const config = {
   navidromeMetricsUrl: (process.env.NAVIDROME_METRICS_URL ?? '').replace(/\/+$/, ''),
   navidromeMetricsPassword: process.env.NAVIDROME_METRICS_PASSWORD ?? '',
   navidromeCheckMs: numberEnv('NAVIDROME_CHECK_MS', 60_000),
+  navidromeClientLocationEnabled: process.env.NAVIDROME_CLIENT_LOCATION_ENABLED === 'true',
   serviceLogCheckMs: numberEnv('SERVICE_LOG_CHECK_MS', 60_000),
 
   thresholds: {

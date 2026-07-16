@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import type { Dispatcher } from '../dispatcher.js';
 import type { HealthRegistry } from '../health.js';
 import type { IncidentManager } from '../incidents.js';
 import type { StateStore } from '../state.js';
@@ -42,6 +44,7 @@ export class QbittorrentMonitor {
 
   constructor(
     private config: QbittorrentMonitorConfig,
+    private dispatcher: Dispatcher,
     private incidents: IncidentManager,
     private state: StateStore,
     private health: HealthRegistry,
@@ -120,7 +123,12 @@ export class QbittorrentMonitor {
       };
       if (!initial && !previous) this.state.incrInfo('qbit.download-new');
       if (!initial && previous && !previous.complete && current.complete) {
-        this.state.incrInfo('qbit.download-complete');
+        await this.dispatcher.emit({
+          level: 'event',
+          tag: 'qbit.download-complete',
+          message: `QBITTORRENT: descarga finalizada (${current.name})`,
+          dedupKey: `qbit:complete:${stableId(hash)}`,
+        });
       }
       const errored = current.state.toLowerCase() === 'error';
       await this.incidents.observe({
@@ -147,6 +155,10 @@ function torrentKey(hash: string): string {
 
 function safeKey(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function stableId(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 function decodeTorrent(raw: string | undefined): StoredTorrent | undefined {

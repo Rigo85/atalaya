@@ -93,7 +93,7 @@ if (config.hostMonitorMode !== 'off' && config.qbittorrentUrl
     username: config.qbittorrentUsername,
     password: config.qbittorrentPassword,
     intervalMs: config.qbittorrentCheckMs,
-  }, incidents, state, health, log));
+  }, dispatcher, incidents, state, health, log));
 }
 
 if (config.hostMonitorMode !== 'off' && config.jellyfinUrl && config.jellyfinApiKey) {
@@ -117,11 +117,15 @@ if (config.hostMonitorMode !== 'off' && config.aonsokuUrl) {
 }
 
 if (config.hostMonitorMode !== 'off' && config.navidromeUrl) {
+  const navidromeClientRecords = config.navidromeClientLocationEnabled && remoteVps
+    ? () => remoteVps.navidromeClients()
+    : undefined;
   monitors.push(new NavidromeMonitor({
     url: config.navidromeUrl, username: config.navidromeUsername, password: config.navidromePassword,
     metricsUrl: config.navidromeMetricsUrl, metricsPassword: config.navidromeMetricsPassword,
     intervalMs: config.navidromeCheckMs,
-  }, config.hostMonitorMode, dispatcher, incidents, state, health, log));
+  }, config.hostMonitorMode, dispatcher, incidents, state, health, log, fetch,
+  navidromeClientRecords, mmdbLocator(config.geoIpLookupCommand, config.geoIpDatabase)));
   monitors.push(new ContainerLogMonitor({
     container: config.navidromeContainer, adapter: 'navidrome-logs', stateKey: 'navidrome.logs.cursor',
     tag: 'navidrome', incidentKey: 'navidrome.logs', serviceLabel: 'NAVIDROME', intervalMs: config.serviceLogCheckMs,
