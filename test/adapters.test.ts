@@ -86,12 +86,12 @@ describe('Pm2Watcher (reglas)', () => {
     return { watcher, ...ctx };
   }
 
-  it('restart suelto → warning; tormenta → critical una sola vez', async () => {
+  it('restart suelto y tormenta → critical, con una sola alerta de tormenta', async () => {
     const now = { t: 1_000_000 };
     const { watcher, sent } = makeWatcher(now);
     await watcher.handleEvent({ event: 'restart', process: { name: 'neutron' } });
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ priority: 'high', dedupKey: 'pm2:restart:neutron' });
+    expect(sent[0]).toMatchObject({ priority: 'critical', dedupKey: 'pm2:restart:neutron' });
 
     now.t += 60_000;
     await watcher.handleEvent({ event: 'restart', process: { name: 'neutron' } });
@@ -100,9 +100,12 @@ describe('Pm2Watcher (reglas)', () => {
     now.t += 1_000;
     await watcher.handleEvent({ event: 'restart', process: { name: 'neutron' } });
 
-    const criticals = sent.filter((s) => s.priority === 'critical');
-    expect(criticals).toHaveLength(1);
-    expect(criticals[0]?.message).toContain('bucle de reinicios');
+    const restarts = sent.filter((s) => s.dedupKey === 'pm2:restart:neutron');
+    const storms = sent.filter((s) => s.dedupKey === 'pm2:storm:neutron');
+    expect(restarts).toHaveLength(2);
+    expect(restarts.every((item) => item.priority === 'critical')).toBe(true);
+    expect(storms).toHaveLength(1);
+    expect(storms[0]?.message).toContain('bucle de reinicios');
   });
 
   it('errored / restart overlimit → critical', async () => {

@@ -159,7 +159,7 @@ export class Pm2Watcher {
         return;
       }
       await this.dispatcher.emit({
-        level: 'warning', tag: 'pm2.restart', message: `PM2: ${name} se reinicio`,
+        level: 'critical', tag: 'pm2.restart', message: `PM2: ${name} se reinicio`,
         dedupKey: `pm2:restart:${name}`,
       });
       return;

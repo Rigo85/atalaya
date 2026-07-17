@@ -8,7 +8,7 @@ al [notification-gateway](https://github.com/Rigo85/notification-gateway) como S
 | Clase | Acción |
 |---|---|
 | crítico | SMS inmediato (contenedor caído >90 s, OOM, proceso pm2 errored, bucle de reinicios) |
-| advertencia | SMS con dedup (reinicio solo, unhealthy); el gateway suprime repeticiones y las contabiliza |
+| advertencia | SMS con dedup (`unhealthy`); el gateway suprime repeticiones y las contabiliza |
 | actividad | SMS inmediato normal y contador en digest (sesion/reproduccion relevante) |
 | info | contador local → digest diario |
 
@@ -23,8 +23,8 @@ detectados de notificaciones aceptadas, deduplicadas y rechazadas por el gateway
 - **docker-events**: stream del socket de Docker. `die` con exit ≠ 0 abre una gracia de
   90 s: si el contenedor no vuelve → crítico; si vuelve → advertencia. Stop ordenado
   (exit 0) solo cuenta en el digest. Mantiene un inventario de contenedores esperados.
-- **pm2-bus**: eventos del daemon PM2 local. Restart suelto → advertencia; ≥3 en
-  10 min → crítico (bucle); `errored`/`restart overlimit` → crítico. Instrumenta la
+- **pm2-bus**: eventos del daemon PM2 local. Todo restart → crítico; ≥3 en
+  10 min añade una alerta de bucle; `errored`/`restart overlimit` → crítico. Instrumenta la
   reconexión nativa del socket PM2 sin abrir una segunda suscripción.
 
 ## Hosts
