@@ -9,7 +9,7 @@ import { HostMonitor, type HostSnapshot, type HostThresholds } from '../src/adap
 import { SmartMonitor, type SmartSnapshot } from '../src/adapters/smart-monitor.js';
 import { GluetunMonitor } from '../src/adapters/gluetun-monitor.js';
 import { QbittorrentMonitor } from '../src/adapters/qbittorrent-monitor.js';
-import { JellyfinMonitor } from '../src/adapters/jellyfin-monitor.js';
+import { formatGeoLocation, JellyfinMonitor } from '../src/adapters/jellyfin-monitor.js';
 import { Dispatcher } from '../src/dispatcher.js';
 import { HealthRegistry } from '../src/health.js';
 import { IncidentManager } from '../src/incidents.js';
@@ -52,6 +52,17 @@ function healthySnapshot(): HostSnapshot {
     }],
   };
 }
+
+describe('GeoLite2 location formatting', () => {
+  it('incluye ciudad, region, pais y radio sin aparentar precision exacta', () => {
+    expect(formatGeoLocation('Lima', 'Lima Province', 'Peru', '20'))
+      .toBe('Lima, Lima Province, Peru, radio ~20 km');
+  });
+
+  it('omite campos ausentes y no duplica nombres equivalentes', () => {
+    expect(formatGeoLocation('Lima', 'lima', 'Peru', '')).toBe('Lima, Peru');
+  });
+});
 
 describe('IncidentManager', () => {
   it('notifica apertura, escalamiento y recuperación sin repetir', async () => {

@@ -59,7 +59,9 @@ con `live` notifican segun su regla.
   altas en digest, finalizaciones por SMS inmediato normal y errores como advertencia.
 - **Jellyfin** establece baseline de sesiones. En `live`, conexiones y cambios de
   reproduccion son actividad inmediata y tambien se resumen en el digest. La ubicacion
-  aproximada se resuelve contra GeoLite2 City local, nunca mediante un tercero.
+  aproximada se resuelve contra GeoLite2 City local, nunca mediante un tercero. Cuando
+  existen, incluye ciudad, region, pais y radio de precision; no muestra coordenadas ni
+  codigo postal porque no son una ubicacion exacta.
 - **Aonsoku** valida la SPA servida por Nginx y su configuracion estatica; no intenta
   simular reproduccion porque es un cliente de Navidrome/Subsonic, no un backend propio.
   Sus errores Nginx se agrupan en el digest y tres o mas en un intervalo abren aviso.

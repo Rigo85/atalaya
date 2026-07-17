@@ -161,21 +161,36 @@ export class JellyfinMonitor {
 export function mmdbLocator(command: string, database: string): LocateIp {
   return async (ip: string): Promise<string> => {
     if (!command || !database || !isIP(ip)) return 'ubicacion no disponible';
-    const [city, country] = await Promise.all([
+    const [city, region, country, accuracyRadius] = await Promise.all([
       mmdbValue(command, database, ip, ['city', 'names', 'en']),
+      mmdbValue(command, database, ip, ['subdivisions', '0', 'names', 'en']),
       mmdbValue(command, database, ip, ['country', 'names', 'en']),
+      mmdbValue(command, database, ip, ['location', 'accuracy_radius']),
     ]);
-    return compact([city, country].filter(Boolean).join(', ') || 'ubicacion no disponible', 42);
+    return formatGeoLocation(city, region, country, accuracyRadius);
   };
 }
 
 async function mmdbValue(command: string, database: string, ip: string, path: string[]): Promise<string> {
   try {
     const { stdout } = await execFileAsync(command, ['--file', database, '--ip', ip, ...path], { timeout: 5_000 });
-    return stdout.match(/"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"') ?? '';
+    return stdout.match(/"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"')
+      ?? stdout.match(/^\s*(\d+(?:\.\d+)?)\s*<[^>]+>\s*$/m)?.[1]
+      ?? '';
   } catch {
     return '';
   }
+}
+
+/** Campos de GeoLite2 útiles para contexto, no para afirmar una ubicación exacta. */
+export function formatGeoLocation(city: string, region: string, country: string, accuracyRadius: string): string {
+  const places = [city, region, country].filter((value, index, values) =>
+    Boolean(value) && values.slice(0, index).every((previous) => previous.localeCompare(value, undefined, { sensitivity: 'accent' }) !== 0),
+  );
+  const radius = Number(accuracyRadius);
+  const suffix = Number.isFinite(radius) && radius > 0 ? `radio ~${Math.round(radius)} km` : '';
+  // No se incluyen coordenadas ni código postal: GeoIP es aproximado y esos campos sugieren precisión indebida.
+  return compact([...places, suffix].filter(Boolean).join(', ') || 'ubicacion no disponible', 52);
 }
 
 function remoteIp(endpoint: string | undefined): string | undefined {
