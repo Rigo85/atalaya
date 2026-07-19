@@ -299,7 +299,7 @@ describe('NavidromeMonitor', () => {
       url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
     }, 'live', dispatcher, incidents, state, new HealthRegistry(), silentLog, fetchFn,
     async () => [{ user: 'usuario', mediaId: 'Tema dos', ip: '198.51.100.40', seenAt: '2026-07-16T00:00:00Z' }],
-    async () => 'Santiago, Chile');
+    async () => 'Santiago, Chile', async () => {});
 
     await monitor.tick();
     title = 'Tema dos';
@@ -327,13 +327,13 @@ describe('NavidromeMonitor', () => {
     async () => [
       { user: 'usuario', mediaId: 'Tema dos', ip: '198.51.100.40', seenAt: '2026-07-16T00:00:00Z' },
       { user: 'usuario', mediaId: 'Tema dos', ip: '198.51.100.41', seenAt: '2026-07-16T00:00:01Z' },
-    ], async () => 'Santiago, Chile');
+    ], async () => 'Santiago, Chile', async () => {});
 
     await monitor.tick();
     title = 'Tema dos';
     await monitor.tick();
 
-    expect(sent[0]?.message).not.toContain('desde');
+    expect(sent[0]?.message).toContain('desde ubicacion no disponible');
   });
 
   it('no reutiliza la ubicacion de una pista anterior sin una correlacion vigente', async () => {
@@ -354,13 +354,45 @@ describe('NavidromeMonitor', () => {
     async () => title === 'Tema uno'
       ? [{ user: 'usuario', mediaId: 'Tema uno', ip: '198.51.100.40', seenAt: '2026-07-16T00:00:00Z' }]
       : [],
-    async () => 'Santiago, Chile');
+    async () => 'Santiago, Chile', async () => {});
 
     await monitor.tick();
     title = 'Tema dos';
     await monitor.tick();
 
-    expect(sent[0]?.message).not.toContain('desde');
+    expect(sent[0]?.message).toContain('desde ubicacion no disponible');
+  });
+
+  it('reintenta la correlacion antes de emitir una reproduccion nueva', async () => {
+    const { dispatcher, sent, state } = makeDispatcher();
+    const incidents = new IncidentManager(state, dispatcher, 'live', silentLog);
+    let title = 'Tema uno';
+    let clientQueries = 0;
+    const fetchFn = vi.fn(async (url: URL | string) => {
+      if (String(url).endsWith('/ping')) return new Response('ok', { status: 200 });
+      return Response.json({
+        'subsonic-response': { status: 'ok', nowPlaying: { entry: [{
+          id: title, title, artist: 'Artista', username: 'usuario', playerId: 'player-1',
+        }] } },
+      });
+    }) as typeof fetch;
+    const monitor = new NavidromeMonitor({
+      url: 'http://navidrome.test', username: 'monitor', password: 'secret', metricsUrl: '', metricsPassword: '', intervalMs: 60_000,
+    }, 'live', dispatcher, incidents, state, new HealthRegistry(), silentLog, fetchFn,
+    async () => {
+      clientQueries++;
+      if (title === 'Tema uno') {
+        return [{ user: 'usuario', mediaId: 'Tema uno', ip: '203.0.113.20', seenAt: '2026-07-18T00:00:00Z' }];
+      }
+      return clientQueries === 2 ? [] : [{ user: 'usuario', mediaId: 'Tema dos', ip: '203.0.113.20', seenAt: '2026-07-18T00:00:00Z' }];
+    }, async () => 'Lima, Peru', async () => {});
+
+    await monitor.tick();
+    title = 'Tema dos';
+    await monitor.tick();
+
+    expect(clientQueries).toBe(3);
+    expect(sent[0]?.message).toContain('desde Lima, Peru');
   });
 
   it('establece baseline, informa cambios de tema y valida metricas', async () => {

@@ -46,6 +46,8 @@ type LocateIp = (ip: string) => Promise<string>;
 export class JellyfinMonitor {
   private timer?: NodeJS.Timeout;
   private running = false;
+  // Solo se conserva en memoria: permite detectar cambios sin persistir IPs.
+  private sessionIps = new Map<string, string>();
 
   constructor(
     private config: JellyfinMonitorConfig,
@@ -109,7 +111,7 @@ export class JellyfinMonitor {
       const key = `${SESSION_PREFIX}${safeKey(session.Id)}`;
       seen.add(key);
       const previous = decodeSession(this.state.getServiceBaseline(key));
-      const current = await this.toStoredSession(session, previous);
+      const current = await this.toStoredSession(key, session, previous);
       if (!initial && !previous) {
         await this.emitActivity('jellyfin.session-new', `jellyfin:session:${safeKey(session.Id)}`, connectionMessage(current));
       } else if (!initial && previous && current.media && current.media !== previous.media) {
@@ -122,23 +124,33 @@ export class JellyfinMonitor {
       this.state.setServiceBaseline(key, JSON.stringify(current));
     }
     for (const [key] of this.state.serviceBaselineEntries(SESSION_PREFIX)) {
-      if (!seen.has(key)) this.state.removeServiceBaseline(key);
+      if (!seen.has(key)) {
+        this.state.removeServiceBaseline(key);
+        this.sessionIps.delete(key);
+      }
     }
     this.state.setServiceBaseline('jellyfin.initialized', '1');
     await this.incidents.observe({ key: 'jellyfin.monitor', severity: 'ok', message: 'JELLYFIN: API operativa' });
   }
 
-  private async toStoredSession(session: JellyfinSession, previous?: StoredSession): Promise<StoredSession> {
+  private async toStoredSession(key: string, session: JellyfinSession, previous?: StoredSession): Promise<StoredSession> {
     const ip = remoteIp(session.RemoteEndPoint);
-    let location = previous?.location ?? 'ubicacion no disponible';
-    if (ip && isPrivateIp(ip)) {
+    let location = 'ubicacion no disponible';
+    const previousIp = this.sessionIps.get(key);
+    if (!ip) {
+      this.sessionIps.delete(key);
+    } else if (isPrivateIp(ip)) {
       location = 'red local';
-    } else if (ip && (!previous || location === 'ubicacion no disponible' || location === 'red local')) {
+      this.sessionIps.set(key, ip);
+    } else if (previousIp === ip) {
+      location = previous?.location ?? location;
+    } else {
       try {
         location = await this.locateIp(ip);
       } catch {
         this.log.warn({}, 'ubicacion Jellyfin no disponible');
       }
+      this.sessionIps.set(key, ip);
     }
     return {
       user: compact(session.UserName ?? 'usuario desconocido', 36),

@@ -371,4 +371,55 @@ describe('JellyfinMonitor', () => {
 
     expect(located).toEqual(['198.51.100.20']);
   });
+
+  it('actualiza la ubicacion cuando cambia la IP sin cambiar la sesion', async () => {
+    const { incidents, state } = setup();
+    const events = fakeGateway();
+    const dispatcher = new Dispatcher(events.client, state, silentLog);
+    let endpoint = '198.51.100.20:8096';
+    let media: { Name: string } | undefined;
+    const located: string[] = [];
+    const monitor = new JellyfinMonitor({ url: 'http://jellyfin.test', apiKey: 'key', intervalMs: 60_000 },
+      'live', dispatcher, incidents, state, new HealthRegistry(), silentLog,
+      (async () => Response.json([{ Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: endpoint, NowPlayingItem: media }])) as typeof fetch,
+      async (ip) => {
+        located.push(ip);
+        return ip === '198.51.100.20' ? 'Tirana, Albania' : 'Lima, Peru';
+      });
+
+    await monitor.tick();
+    endpoint = '203.0.113.20:8096';
+    await monitor.tick();
+    media = { Name: 'Pelicula' };
+    await monitor.tick();
+
+    expect(located).toEqual(['198.51.100.20', '203.0.113.20']);
+    expect(events.sent).toHaveLength(1);
+    expect(events.sent[0]?.message).toContain('desde Lima, Peru');
+    expect(events.sent[0]?.message).not.toContain('Albania');
+  });
+
+  it('no reutiliza una ubicacion anterior si falla GeoIP tras cambiar la IP', async () => {
+    const { incidents, state } = setup();
+    const events = fakeGateway();
+    const dispatcher = new Dispatcher(events.client, state, silentLog);
+    let endpoint = '198.51.100.20:8096';
+    let media: { Name: string } | undefined;
+    const monitor = new JellyfinMonitor({ url: 'http://jellyfin.test', apiKey: 'key', intervalMs: 60_000 },
+      'live', dispatcher, incidents, state, new HealthRegistry(), silentLog,
+      (async () => Response.json([{ Id: 's1', UserName: 'Ana', DeviceName: 'TV', RemoteEndPoint: endpoint, NowPlayingItem: media }])) as typeof fetch,
+      async (ip) => {
+        if (ip === '203.0.113.20') throw new Error('GeoIP temporalmente no disponible');
+        return 'Tirana, Albania';
+      });
+
+    await monitor.tick();
+    endpoint = '203.0.113.20:8096';
+    await monitor.tick();
+    media = { Name: 'Pelicula' };
+    await monitor.tick();
+
+    expect(events.sent[0]?.message).toContain('ubicacion no disponible');
+    expect(events.sent[0]?.message).not.toContain('Albania');
+  });
 });

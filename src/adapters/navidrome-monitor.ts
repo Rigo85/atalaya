@@ -6,6 +6,7 @@ import type { IncidentManager, MonitorMode } from '../incidents.js';
 import type { StateStore } from '../state.js';
 
 const SESSION_PREFIX = 'navidrome.session.';
+const CLIENT_RECORD_RETRY_MS = 10_000;
 
 interface Logger {
   info: (obj: object, msg: string) => void;
@@ -64,6 +65,7 @@ export class NavidromeMonitor {
     private fetchFn: FetchLike = fetch,
     private clientRecords?: () => Promise<NavidromeClientRecord[]>,
     private locateIp: LocateIp = () => Promise.resolve('ubicacion no disponible'),
+    private waitForClientRecord: (ms: number) => Promise<void> = sleep,
   ) {
     health.register('navidrome');
   }
@@ -107,7 +109,11 @@ export class NavidromeMonitor {
   private async checkActivity(): Promise<void> {
     try {
       const entries = await this.nowPlayingWithRetry();
-      const records = await this.loadClientRecords();
+      let records = await this.loadClientRecords();
+      if (this.needsClientRecordRetry(entries, records)) {
+        await this.waitForClientRecord(CLIENT_RECORD_RETRY_MS);
+        records = await this.loadClientRecords();
+      }
       await this.consume(entries, records);
     } catch (error) {
       this.log.warn({ reason: activityFailureReason(error) }, 'consulta de actividad Navidrome falló');
@@ -125,6 +131,18 @@ export class NavidromeMonitor {
       this.log.warn({}, 'ubicacion Navidrome no disponible');
       return [];
     }
+  }
+
+  private needsClientRecordRetry(entries: NowPlayingEntry[], records: NavidromeClientRecord[]): boolean {
+    if (!this.clientRecords) return false;
+    return entries.some((entry) => {
+      const session = toSession(entry);
+      const key = `${SESSION_PREFIX}${safeKey(`${session.user}:${session.player}`)}`;
+      const previous = decodeSession(this.state.getServiceBaseline(key));
+      const isNewMedia = !previous || previous.mediaId !== session.mediaId;
+      const hasMatch = records.some((record) => record.user === session.user && record.mediaId === session.mediaId);
+      return isNewMedia && !hasMatch;
+    });
   }
 
   private async nowPlayingWithRetry(): Promise<NowPlayingEntry[]> {
@@ -294,8 +312,11 @@ function toSession(entry: NowPlayingEntry): StoredSession {
 }
 
 function message(session: StoredSession): string {
-  const location = session.location ? ` desde ${session.location}` : '';
-  return `NAVIDROME: ${session.user} reproduce ${session.media}${location}`;
+  return `NAVIDROME: ${session.user} reproduce ${session.media} desde ${session.location || 'ubicacion no disponible'}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function decodeSession(raw: string | undefined): StoredSession | undefined {
